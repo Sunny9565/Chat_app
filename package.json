@@ -1,0 +1,13 @@
+{
+  "name": "temp-chat-app",
+  "version": "1.0.0",
+  "description": "A privacy-focused disposable chat application that active for 20 hours.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
