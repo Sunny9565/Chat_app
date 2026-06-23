@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Disposable Personal Chat</title>
+    <title>Disposable Private Chat & Call</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; padding: 10px; }
@@ -22,20 +22,34 @@
         .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; font-size: 15px; word-break: break-word; }
         .msg.sent { background: #ff9800; color: #121212; align-self: flex-end; border-bottom-right-radius: 2px; }
         .msg.received { background: #2d2d2d; color: #e0e0e0; align-self: flex-start; border-bottom-left-radius: 2px; }
+        
+        /* Media Attachments styling */
+        .chat-img { max-width: 100%; border-radius: 8px; margin-top: 5px; display: block; max-height: 200px; object-fit: cover; cursor: pointer; }
         .meta { font-size: 11px; margin-top: 4px; color: #888; align-self: flex-start; }
         .sent + .meta { align-self: flex-end; }
         .system-msg { text-align: center; font-size: 12px; color: #777; margin: 8px 0; font-style: italic; }
-        .input-row { display: flex; gap: 10px; }
-        .input-row input { margin-bottom: 0; }
-        .input-row button { width: auto; padding: 0 20px; margin-bottom: 0; }
-        #share-id-banner { background: #2d2d2d; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; border-left: 4px solid #ff9800; font-weight: bold; }
+        
+        .input-row { display: flex; gap: 8px; align-items: center; }
+        .input-row input { margin-bottom: 0; flex: 1; }
+        .input-row button { width: auto; padding: 0 18px; margin-bottom: 0; height: 46px; }
+        
+        .upload-btn { background: #2d2d2d; color: #ff9800; border: 1px solid #3d3d3d; font-size: 20px; font-weight: bold; width: 46px; height: 46px; display: flex; justify-content: center; align-items: center; border-radius: 6px; cursor: pointer; }
+        
+        /* Video Stream elements layout */
+        #share-id-banner { background: #2d2d2d; padding: 10px; border-radius: 6px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #ff9800; font-weight: bold; }
+        .call-controls { display: flex; gap: 10px; }
+        .call-btn { background: none; border: none; font-size: 16px; cursor: pointer; padding: 5px; margin: 0; width: auto; color: #ff9800; font-weight: bold; }
+        .call-btn.hangup { color: #f44336; display: none; }
+        
+        #video-container { display: none; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; background: #000; padding: 5px; border-radius: 8px; }
+        video { width: 100%; border-radius: 6px; background: #222; transform: scaleX(-1); }
+        #remote-video { transform: none; }
     </style>
 </head>
 <body>
 
-    <!-- SCREEN 1: Setup Screen (No login, just name) -->
     <div id="entry-screen" class="card">
-        <h2>Temporary Chat</h2>
+        <h2>Temporary Personal Chat</h2>
         <input type="text" id="username-input" placeholder="Your Name" autocomplete="off">
         <hr style="border: 0; border-top: 1px solid #2d2d2d; margin-bottom: 15px;">
         <button onclick="createRoom()">Create Chat & Get ID</button>
@@ -44,11 +58,25 @@
         <button class="secondary-btn" onclick="joinRoom()">Connect using ID</button>
     </div>
 
-    <!-- SCREEN 2: Active Chat Screen -->
     <div id="chat-screen" class="card">
-        <div id="share-id-banner">Share Unique ID: <span id="display-id" style="color: #ff9800; letter-spacing: 2px;">------</span></div>
+        <div id="share-id-banner">
+            <div>ID: <span id="display-id" style="color: #ff9800; letter-spacing: 1px;">------</span></div>
+            <div class="call-controls">
+                <button class="call-btn" id="start-call-btn" onclick="initiateCall()">📹 Call</button>
+                <button class="call-btn hangup" id="hangup-btn" onclick="hangUpCall()">🛑 End</button>
+            </div>
+        </div>
+
+        <div id="video-container">
+            <video id="local-video" autoplay playsinline muted></video>
+            <video id="remote-video" autoplay playsinline></video>
+        </div>
+
         <div id="message-box"></div>
         <div class="input-row">
+            <input type="file" id="image-input" accept="image/*" style="display: none;" onchange="sendImage(this)">
+            <label for="image-input" class="upload-btn">+</label>
+            
             <input type="text" id="chat-msg-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMsg()">
             <button onclick="sendMsg()">Send</button>
         </div>
@@ -59,6 +87,11 @@
         const socket = io();
         let myUsername = "";
         let currentRoomId = "";
+        
+        // P2P Signaling parameters
+        let localStream;
+        let peerConnection;
+        const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
         function createRoom() {
             myUsername = document.getElementById('username-input').value.trim();
@@ -69,7 +102,7 @@
         function joinRoom() {
             myUsername = document.getElementById('username-input').value.trim();
             const targetId = document.getElementById('roomid-input').value.trim();
-            if (!myUsername || !targetId) return alert("Please enter both your Name and the Chat ID!");
+            if (!myUsername || !targetId) return alert("Please enter both Name and Chat ID!");
             socket.emit('join-room', { roomId: targetId, username: myUsername });
         }
 
@@ -78,10 +111,120 @@
             const txt = input.value.trim();
             if(!txt) return;
             
-            socket.emit('send-message', { roomId: currentRoomId, message: txt, sender: myUsername });
+            socket.emit('send-message', { roomId: currentRoomId, message: txt, sender: myUsername, image: null });
             input.value = "";
         }
 
+        function sendImage(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                socket.emit('send-message', { 
+                    roomId: currentRoomId, 
+                    message: "", 
+                    sender: myUsername, 
+                    image: event.target.result 
+                });
+            };
+            reader.readAsDataURL(file);
+            input.value = "";
+        }
+
+        // --- WEBRTC CORE IMPLEMENTATION ---
+        async function initiateCall() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('local-video').srcObject = localStream;
+                document.getElementById('video-container').style.display = 'grid';
+                document.getElementById('start-call-btn').style.display = 'none';
+                document.getElementById('hangup-btn').style.display = 'block';
+
+                createPeerConnection();
+                
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.emit('call-signal', { roomId: currentRoomId, signalData: { offer } });
+                appendSystemMsg("Calling friend...");
+            } catch (err) {
+                alert("Could not access camera/microphone. Ensure permissions are granted.");
+                console.error(err);
+            }
+        }
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.ontrack = (event) => {
+                document.getElementById('remote-video').srcObject = event.streams[0];
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('call-signal', { roomId: currentRoomId, signalData: { candidate: event.candidate } });
+                }
+            };
+        }
+
+        socket.on('call-signal-received', async ({ signalData }) => {
+            if (!peerConnection) {
+                let accept = confirm("Incoming video call from friend. Accept?");
+                if (!accept) return;
+                
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    document.getElementById('local-video').srcObject = localStream;
+                    document.getElementById('video-container').style.display = 'grid';
+                    document.getElementById('start-call-btn').style.display = 'none';
+                    document.getElementById('hangup-btn').style.display = 'block';
+                    
+                    createPeerConnection();
+                } catch(err) {
+                    return alert("Failed to open hardware peripherals.");
+                }
+            }
+
+            if (signalData.offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(signalData.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.emit('call-signal', { roomId: currentRoomId, signalData: { answer } });
+            } else if (signalData.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(signalData.answer));
+            } else if (signalData.candidate) {
+                try { await peerConnection.addIceCandidate(new RTCIceCandidate(signalData.candidate)); } catch(e){}
+            }
+        });
+
+        function hangUpCall() {
+            socket.emit('end-call', { roomId: currentRoomId });
+            stopCallUI();
+        }
+
+        socket.on('call-ended-by-peer', () => {
+            appendSystemMsg("Call ended.");
+            stopCallUI();
+        });
+
+        function stopCallUI() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            document.getElementById('video-container').style.display = 'none';
+            document.getElementById('start-call-btn').style.display = 'block';
+            document.getElementById('hangup-btn').style.display = 'none';
+            document.getElementById('local-video').srcObject = null;
+            document.getElementById('remote-video').srcObject = null;
+        }
+
+        // --- RELAY SUBSCRIPTIONS ---
         socket.on('room-created', ({ roomId }) => {
             currentRoomId = roomId;
             document.getElementById('display-id').innerText = roomId;
@@ -96,13 +239,18 @@
             appendSystemMsg(msg);
         });
 
-        socket.on('receive-message', ({ sender, message, time }) => {
+        socket.on('receive-message', ({ sender, message, image, time }) => {
             const box = document.getElementById('message-box');
             const isMe = sender === myUsername;
             
+            let content = message ? `<div>${escapeHtml(message)}</div>` : "";
+            if (image) {
+                content += `<img src="${image}" class="chat-img" onclick="window.open(this.src)">`;
+            }
+            
             box.innerHTML += `
                 <div class="msg-row">
-                    <div class="msg ${isMe ? 'sent' : 'received'}">${escapeHtml(message)}</div>
+                    <div class="msg ${isMe ? 'sent' : 'received'}">${content}</div>
                     <div class="meta">${isMe ? 'You' : escapeHtml(sender)} • ${time}</div>
                 </div>
             `;
@@ -111,14 +259,13 @@
 
         socket.on('peer-disconnected', (msg) => {
             appendSystemMsg(msg);
+            stopCallUI();
         });
 
-        socket.on('error-msg', (errMsg) => {
-            alert(errMsg);
-        });
-
+        socket.on('error-msg', (errMsg) => alert(errMsg));
+        
         socket.on('room-expired', () => {
-            alert("The 20-hour window has expired. Chat room destroyed.");
+            alert("The 20-hour session limit has been reached. Room destroyed.");
             window.location.reload();
         });
 
