@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disposable Personal Chat</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; height: 100vh; padding: 10px; }
+        .card { background: #1e1e1e; padding: 25px; border-radius: 12px; width: 100%; max-width: 450px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); border: 1px solid #2d2d2d; display: flex; flex-direction: column; }
+        h2 { text-align: center; margin-bottom: 20px; color: #ff9800; font-weight: 500; }
+        input { width: 100%; padding: 12px; margin-bottom: 15px; background: #2d2d2d; border: 1px solid #3d3d3d; border-radius: 6px; color: #fff; font-size: 16px; }
+        input:focus { outline: 1px solid #ff9800; }
+        button { width: 100%; padding: 12px; background: #ff9800; border: none; color: #121212; font-weight: bold; font-size: 16px; border-radius: 6px; cursor: pointer; margin-bottom: 10px; transition: background 0.2s; }
+        button:hover { background: #e08600; }
+        .secondary-btn { background: transparent; border: 1px solid #3d3d3d; color: #bbb; }
+        .secondary-btn:hover { background: #2d2d2d; color: #fff; }
+        
+        #chat-screen { display: none; height: 85vh; }
+        #message-box { flex: 1; overflow-y: auto; background: #151515; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #2d2d2d; display: flex; flex-direction: column; }
+        .msg-row { margin-bottom: 12px; display: flex; flex-direction: column; }
+        .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; font-size: 15px; word-break: break-word; }
+        .msg.sent { background: #ff9800; color: #121212; align-self: flex-end; border-bottom-right-radius: 2px; }
+        .msg.received { background: #2d2d2d; color: #e0e0e0; align-self: flex-start; border-bottom-left-radius: 2px; }
+        .meta { font-size: 11px; margin-top: 4px; color: #888; align-self: flex-start; }
+        .sent + .meta { align-self: flex-end; }
+        .system-msg { text-align: center; font-size: 12px; color: #777; margin: 8px 0; font-style: italic; }
+        .input-row { display: flex; gap: 10px; }
+        .input-row input { margin-bottom: 0; }
+        .input-row button { width: auto; padding: 0 20px; margin-bottom: 0; }
+        #share-id-banner { background: #2d2d2d; padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; border-left: 4px solid #ff9800; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <!-- SCREEN 1: Setup Screen (No login, just name) -->
+    <div id="entry-screen" class="card">
+        <h2>Temporary Chat</h2>
+        <input type="text" id="username-input" placeholder="Your Name" autocomplete="off">
+        <hr style="border: 0; border-top: 1px solid #2d2d2d; margin-bottom: 15px;">
+        <button onclick="createRoom()">Create Chat & Get ID</button>
+        <div style="text-align: center; color: #666; margin: 5px 0 10px 0;">- OR -</div>
+        <input type="text" id="roomid-input" placeholder="Enter Unique ID from Friend">
+        <button class="secondary-btn" onclick="joinRoom()">Connect using ID</button>
+    </div>
+
+    <!-- SCREEN 2: Active Chat Screen -->
+    <div id="chat-screen" class="card">
+        <div id="share-id-banner">Share Unique ID: <span id="display-id" style="color: #ff9800; letter-spacing: 2px;">------</span></div>
+        <div id="message-box"></div>
+        <div class="input-row">
+            <input type="text" id="chat-msg-input" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMsg()">
+            <button onclick="sendMsg()">Send</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let myUsername = "";
+        let currentRoomId = "";
+
+        function createRoom() {
+            myUsername = document.getElementById('username-input').value.trim();
+            if (!myUsername) return alert("Please enter your name first!");
+            socket.emit('create-room', { username: myUsername });
+        }
+
+        function joinRoom() {
+            myUsername = document.getElementById('username-input').value.trim();
+            const targetId = document.getElementById('roomid-input').value.trim();
+            if (!myUsername || !targetId) return alert("Please enter both your Name and the Chat ID!");
+            socket.emit('join-room', { roomId: targetId, username: myUsername });
+        }
+
+        function sendMsg() {
+            const input = document.getElementById('chat-msg-input');
+            const txt = input.value.trim();
+            if(!txt) return;
+            
+            socket.emit('send-message', { roomId: currentRoomId, message: txt, sender: myUsername });
+            input.value = "";
+        }
+
+        socket.on('room-created', ({ roomId }) => {
+            currentRoomId = roomId;
+            document.getElementById('display-id').innerText = roomId;
+            transitionUI();
+            appendSystemMsg(`Room active! Share Code: ${roomId} with your friend.`);
+        });
+
+        socket.on('peer-connected', ({ msg, roomId }) => {
+            currentRoomId = roomId;
+            document.getElementById('display-id').innerText = roomId;
+            transitionUI();
+            appendSystemMsg(msg);
+        });
+
+        socket.on('receive-message', ({ sender, message, time }) => {
+            const box = document.getElementById('message-box');
+            const isMe = sender === myUsername;
+            
+            box.innerHTML += `
+                <div class="msg-row">
+                    <div class="msg ${isMe ? 'sent' : 'received'}">${escapeHtml(message)}</div>
+                    <div class="meta">${isMe ? 'You' : escapeHtml(sender)} • ${time}</div>
+                </div>
+            `;
+            box.scrollTop = box.scrollHeight;
+        });
+
+        socket.on('peer-disconnected', (msg) => {
+            appendSystemMsg(msg);
+        });
+
+        socket.on('error-msg', (errMsg) => {
+            alert(errMsg);
+        });
+
+        socket.on('room-expired', () => {
+            alert("The 20-hour window has expired. Chat room destroyed.");
+            window.location.reload();
+        });
+
+        function transitionUI() {
+            document.getElementById('entry-screen').style.display = 'none';
+            document.getElementById('chat-screen').style.display = 'flex';
+        }
+
+        function appendSystemMsg(text) {
+            const box = document.getElementById('message-box');
+            box.innerHTML += `<div class="system-msg">${text}</div>`;
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
