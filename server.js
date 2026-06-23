@@ -6,16 +6,17 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS so connections from any network work smoothly
+// Socket.io initialization with CORS and 10MB Buffer limit for large images
 const io = new Server(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
-    }
+    },
+    maxHttpBufferSize: 1e7 
 });
 
 const activeRooms = new Map();
-const TWENTY_HOURS = 20 * 60 * 60 * 1000; 
+const TWENTY_HOURS = 20 * 60 * 60 * 1000; // 20 Hours in milliseconds
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -23,9 +24,9 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Helper function to generate a clean, readable Unique ID
+// Generates a clean 6-character Unique ID
 function generateShortId() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // No confusing characters like O/0/I/1
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let result = '';
     for (let i = 0; i < 6; i++) {
         result += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -34,9 +35,9 @@ function generateShortId() {
 }
 
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
+    console.log('User connected:', socket.id);
 
-    // Feature 2: Create room and get Unique ID
+    // FEATURE 2: Create room and get Unique ID
     socket.on('create-room', ({ username }) => {
         const roomId = generateShortId();
         
@@ -48,7 +49,7 @@ io.on('connection', (socket) => {
         socket.join(roomId);
         socket.emit('room-created', { roomId, username });
 
-        // Feature 3: Automatically delete room after 20 hours
+        // FEATURE 3: Automatically delete room after 20 hours
         setTimeout(() => {
             if (activeRooms.has(roomId)) {
                 io.to(roomId).emit('room-expired');
@@ -57,7 +58,7 @@ io.on('connection', (socket) => {
         }, TWENTY_HOURS);
     });
 
-    // Feature 4: Connect to a friend via Unique ID
+    // FEATURE 4: Connect to a friend via Unique ID
     socket.on('join-room', ({ roomId, username }) => {
         const cleanedRoomId = roomId.trim().toUpperCase();
         
@@ -75,21 +76,32 @@ io.on('connection', (socket) => {
         socket.join(cleanedRoomId);
 
         io.to(cleanedRoomId).emit('peer-connected', { 
-            msg: `${username} connected to the chat. Room active for 20 hours!`,
+            msg: `${username} connected. Connection active for 20 hours!`,
             roomId: cleanedRoomId
         });
     });
 
-    // Handle incoming messages
-    socket.on('send-message', ({ roomId, message, sender }) => {
+    // Handle Text and Image messages
+    socket.on('send-message', ({ roomId, message, sender, image }) => {
         io.to(roomId).emit('receive-message', {
             sender,
             message,
+            image,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         });
     });
 
-    // Disconnect handler
+    // --- WEBRTC SIGNALLING FOR VIDEO/AUDIO CALLS ---
+    socket.on('call-signal', ({ roomId, signalData }) => {
+        // Relays WebRTC Offer, Answer, or ICE Candidates to the other peer
+        socket.to(roomId).emit('call-signal-received', { signalData });
+    });
+
+    socket.on('end-call', ({ roomId }) => {
+        socket.to(roomId).emit('call-ended-by-peer');
+    });
+
+    // Handle Disconnection and Cleanup
     socket.on('disconnect', () => {
         for (let [roomId, room] of activeRooms.entries()) {
             const userIndex = room.users.findIndex(u => u.socketId === socket.id);
@@ -98,6 +110,7 @@ io.on('connection', (socket) => {
                 room.users.splice(userIndex, 1);
                 
                 io.to(roomId).emit('peer-disconnected', `${leavingUser} left the chat.`);
+                io.to(roomId).emit('call-ended-by-peer'); // Close call grid if user drops
                 
                 if (room.users.length === 0) {
                     activeRooms.delete(roomId);
